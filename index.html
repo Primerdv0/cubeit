@@ -95,25 +95,32 @@
     const historyEl = document.getElementById("history");
     const logEl = document.getElementById("log");
 
+    const CUBE_MAC = "C8:17:F5:D7:CE:F7";
     let moves = [];
 
     function log(message, data) {
-      const line = `[${new Date().toLocaleTimeString()}] ${message}` +
+      const line =
+        `[${new Date().toLocaleTimeString()}] ${message}` +
         (data ? `\n${JSON.stringify(data, null, 2)}` : "");
+
       logEl.textContent = `${line}\n\n${logEl.textContent}`;
     }
 
     connectBtn.addEventListener("click", async () => {
       try {
         if (!navigator.bluetooth) {
-          statusEl.textContent = "Web Bluetooth not available. Use Chrome on Android.";
+          statusEl.textContent =
+            "Web Bluetooth not available. Use Chrome on Android.";
           return;
         }
 
         statusEl.textContent = "Opening Bluetooth picker...";
         log("Attempting cube connection");
 
-        const conn = await connectGanCube();
+        const conn = await connectGanCube(async () => {
+          return CUBE_MAC;
+        });
+
         statusEl.textContent = "Connected. Turn the cube.";
         connectBtn.textContent = "Connected";
 
@@ -122,8 +129,10 @@
 
           if (event.type === "MOVE") {
             const move = event.move;
+
             moves.unshift(move);
             moves = moves.slice(0, 20);
+
             lastMoveEl.textContent = move;
             historyEl.textContent = moves.join("  ");
           }
@@ -138,10 +147,17 @@
           }
         });
 
-        await conn.sendCubeCommand({ type: "REQUEST_FACELETS" });
+        await conn.sendCubeCommand({
+          type: "REQUEST_FACELETS"
+        });
+
       } catch (err) {
         statusEl.textContent = "Connection failed or canceled.";
-        log("Error", { message: err.message, stack: err.stack });
+
+        log("Error", {
+          message: err.message,
+          stack: err.stack
+        });
       }
     });
   </script>
