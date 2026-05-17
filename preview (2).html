@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GAN Cube Controller Test</title>
+  <style>
+    :root {
+      --bg: #101114;
+      --panel: #1b1d24;
+      --panel2: #111318;
+      --text: #f5f5f5;
+      --muted: #aeb4c2;
+      --accent: #5f7cff;
+      --safe: #245c3b;
+      --warn: #8a5a22;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+
+    main {
+      width: min(96vw, 760px);
+      background: var(--panel);
+      border-radius: 22px;
+      padding: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    }
+
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    p { margin: 6px 0 14px; }
+    .muted { color: var(--muted); }
+
+    button {
+      width: 100%;
+      font-size: 18px;
+      padding: 14px;
+      border: 0;
+      border-radius: 16px;
+      background: var(--accent);
+      color: white;
+      font-weight: 800;
+      margin: 8px 0;
+    }
+
+    button.secondary { background: #303545; }
+    button.safe { background: var(--safe); }
+    button.warn { background: var(--warn); }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .card {
+      background: var(--panel2);
+      border-radius: 18px;
+      padding: 14px;
+      margin-top: 10px;
+    }
+
+    .big {
+      font-size: 44px;
+      font-weight: 900;
+      text-align: center;
+      line-height: 1.1;
+    }
+
+    .cube-wrap {
+      overflow-x: auto;
+      padding: 12px 4px;
+    }
+
+    .cube-net {
+      display: grid;
+      grid-template-columns: repeat(12, 26px);
+      grid-template-rows: repeat(9, 26px);
+      gap: 3px;
+      width: max-content;
+      margin: 0 auto;
+    }
+
+    .sticker {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      box-shadow: inset 0 0 0 2px rgba(0,0,0,.28);
+      will-change: background-color;
+    }
+
+    .empty {
+      width: 26px;
+      height: 26px;
+    }
+
+    .ok { color: #76f7a1; }
+    .warnText { color: #ffd166; }
+
+    @media (max-width: 560px) {
+      main { padding: 16px; }
+      .grid2 { grid-template-columns: 1fr; }
+      .cube-net {
+        grid-template-columns: repeat(12, 22px);
+        grid-template-rows: repeat(9, 22px);
+        gap: 2px;
+      }
+      .sticker, .empty { width: 22px; height: 22px; border-radius: 5px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>GAN Cube Controller Test</h1>
+    <p class="muted">
+      Optimized translator mode: set the current solved cube as baseline, then state packets are translated. 
+      The graphic only repaints changed stickers and draws at screen refresh speed.
+    </p>
+
+    <button id="connectBtn">Connect GAN Cube</button>
+    <button id="calibrateBtn" class="safe">Set Current Cube as Solved / Create Translator</button>
+    <button id="resetBtn" class="secondary">Reset Graphic Only</button>
+    <button id="methodBtn" class="warn">Relative Method: A</button>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="muted">Status</div>
+        <div id="status">Not connected</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Last move</div>
+        <div id="lastMove" class="big">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Cube graphic</div>
+      <div class="cube-wrap">
+        <div id="cubeNet" class="cube-net"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Info</div>
+      <div id="history">Connect the cube, physically solve it, then create the translator.</div>
+    </div>
+  </main>
+
+  <script type="module">
+    import { connectGanCube } from "https://esm.sh/gan-web-bluetooth?bundle";
+
+    const CUBE_MAC = "C8:17:F5:D7:CE:F7";
+
+    const connectBtn = document.getElementById("connectBtn");
+    const calibrateBtn = document.getElementById("calibrateBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const methodBtn = document.getElementById("methodBtn");
+    const statusEl = document.getElementById("status");
+    const lastMoveEl = document.getElementById("lastMove");
+    const historyEl = document.getElementById("history");
+    const cubeNetEl = document.getElementById("cubeNet");
+
+    const colors = {
+      U: "#ffffff",
+      R: "#d72638",
+      F: "#22c55e",
+      D: "#ffd23f",
+      L: "#ff8c1a",
+      B: "#2563eb",
+      "?": "#3a3f4f"
+    };
+
+    const facePositions = {
+      U: [0, 3],
+      L: [3, 0],
+      F: [3, 3],
+      R: [3, 6],
+      B: [3, 9],
+      D: [6, 3]
+    };
+
+    const SOLVED_STATE = {
+      CP: [0,1,2,3,4,5,6,7],
+      CO: [0,0,0,0,0,0,0,0],
+      EP: [0,1,2,3,4,5,6,7,8,9,10,11],
+      EO: [0,0,0,0,0,0,0,0,0,0,0,0]
+    };
+
+    const cornerFacelet = [
+      [8, 9, 20], [6, 18, 38], [0, 36, 47], [2, 45, 11],
+      [29, 26, 15], [27, 44, 24], [33, 53, 42], [35, 17, 51]
+    ];
+
+    const cornerColor = [
+      ["U","R","F"], ["U","F","L"], ["U","L","B"], ["U","B","R"],
+      ["D","F","R"], ["D","L","F"], ["D","B","L"], ["D","R","B"]
+    ];
+
+    const edgeFacelet = [
+      [5, 10], [7, 19], [3, 37], [1, 46],
+      [32, 16], [28, 25], [30, 43], [34, 52],
+      [23, 12], [21, 41], [50, 39], [48, 14]
+    ];
+
+    const edgeColor = [
+      ["U","R"], ["U","F"], ["U","L"], ["U","B"],
+      ["D","R"], ["D","F"], ["D","L"], ["D","B"],
+      ["F","R"], ["F","L"], ["B","L"], ["B","R"]
+    ];
+
+    let stickerEls = [];
+    let cubeFacelets = solvedFacelets();
+    let paintedFacelets = "";
+    let latestState = null;
+    let baselineState = null;
+    let relativeMethod = "A";
+    let translatedPackets = 0;
+    let moves = [];
+    let drawPending = false;
+    let pendingHistoryText = "";
+    let pendingLastMoveText = "";
+
+    function solvedFacelets() {
+      return "U".repeat(9) + "R".repeat(9) + "F".repeat(9) + "D".repeat(9) + "L".repeat(9) + "B".repeat(9);
+    }
+
+    function cloneState(s) {
+      return {
+        CP: s.CP.slice(),
+        CO: s.CO.slice(),
+        EP: s.EP.slice(),
+        EO: s.EO.slice()
+      };
+    }
+
+    function isValidState(s) {
+      return s &&
+        Array.isArray(s.CP) && s.CP.length === 8 &&
+        Array.isArray(s.CO) && s.CO.length === 8 &&
+        Array.isArray(s.EP) && s.EP.length === 12 &&
+        Array.isArray(s.EO) && s.EO.length === 12;
+    }
+
+    function invertState(s) {
+      const inv = cloneState(SOLVED_STATE);
+
+      for (let pos = 0; pos < 8; pos++) {
+        const cubie = s.CP[pos];
+        inv.CP[cubie] = pos;
+        inv.CO[cubie] = (3 - s.CO[pos]) % 3;
+      }
+
+      for (let pos = 0; pos < 12; pos++) {
+        const cubie = s.EP[pos];
+        inv.EP[cubie] = pos;
+        inv.EO[cubie] = (2 - s.EO[pos]) % 2;
+      }
+
+      return inv;
+    }
+
+    function multiplyState(a, b) {
+      const r = cloneState(SOLVED_STATE);
+
+      for (let pos = 0; pos < 8; pos++) {
+        const bCubie = b.CP[pos];
+        r.CP[pos] = a.CP[bCubie];
+        r.CO[pos] = (b.CO[pos] + a.CO[bCubie]) % 3;
+      }
+
+      for (let pos = 0; pos < 12; pos++) {
+        const bCubie = b.EP[pos];
+        r.EP[pos] = a.EP[bCubie];
+        r.EO[pos] = (b.EO[pos] + a.EO[bCubie]) % 2;
+      }
+
+      return r;
+    }
+
+    function relativeState(current, baseline) {
+      if (!baseline) return current;
+
+      const invBase = invertState(baseline);
+
+      if (relativeMethod === "A") {
+        return multiplyState(invBase, current);
+      } else {
+        return multiplyState(current, invBase);
+      }
+    }
+
+    function stateToFacelets(s) {
+      const f = solvedFacelets().split("");
+
+      for (let pos = 0; pos < 8; pos++) {
+        const cubie = s.CP[pos];
+        const ori = s.CO[pos];
+
+        for (let n = 0; n < 3; n++) {
+          f[cornerFacelet[pos][(n + ori) % 3]] = cornerColor[cubie][n];
+        }
+      }
+
+      for (let pos = 0; pos < 12; pos++) {
+        const cubie = s.EP[pos];
+        const ori = s.EO[pos];
+
+        for (let n = 0; n < 2; n++) {
+          f[edgeFacelet[pos][(n + ori) % 2]] = edgeColor[cubie][n];
+        }
+      }
+
+      return f.join("");
+    }
+
+    function buildCubeNetOnce() {
+      cubeNetEl.innerHTML = "";
+      stickerEls = Array(54).fill(null);
+
+      const faceOrder = ["U", "R", "F", "D", "L", "B"];
+
+      for (let row = 0; row < 9; row++) {
+        for (let col = 0; col < 12; col++) {
+          const div = document.createElement("div");
+          let stickerFace = null;
+          let stickerIndex = null;
+
+          for (const face of Object.keys(facePositions)) {
+            const [fr, fc] = facePositions[face];
+            if (row >= fr && row < fr + 3 && col >= fc && col < fc + 3) {
+              stickerFace = face;
+              stickerIndex = (row - fr) * 3 + (col - fc);
+              break;
+            }
+          }
+
+          if (stickerFace) {
+            div.className = "sticker";
+            const faceIndex = faceOrder.indexOf(stickerFace);
+            stickerEls[faceIndex * 9 + stickerIndex] = div;
+          } else {
+            div.className = "empty";
+          }
+
+          cubeNetEl.appendChild(div);
+        }
+      }
+
+      forceDrawFacelets();
+    }
+
+    function scheduleDraw() {
+      if (drawPending) return;
+      drawPending = true;
+      requestAnimationFrame(drawFrame);
+    }
+
+    function drawFrame() {
+      drawPending = false;
+
+      for (let i = 0; i < 54; i++) {
+        if (cubeFacelets[i] !== paintedFacelets[i]) {
+          const el = stickerEls[i];
+          if (el) el.style.background = colors[cubeFacelets[i]] || colors["?"];
+        }
+      }
+
+      paintedFacelets = cubeFacelets;
+
+      if (pendingLastMoveText) {
+        lastMoveEl.textContent = pendingLastMoveText;
+        pendingLastMoveText = "";
+      }
+
+      if (pendingHistoryText) {
+        historyEl.textContent = pendingHistoryText;
+        pendingHistoryText = "";
+      }
+    }
+
+    function forceDrawFacelets() {
+      paintedFacelets = "";
+      scheduleDraw();
+    }
+
+    function resetGraphicOnly(message = "Graphic reset to solved.") {
+      cubeFacelets = solvedFacelets();
+      moves = [];
+      pendingLastMoveText = "SOLVED";
+      pendingHistoryText = message;
+      forceDrawFacelets();
+    }
+
+    function setTranslatorBaseline() {
+      if (!latestState) {
+        historyEl.textContent = "No cube state received yet. Connect and turn once, then try again.";
+        return;
+      }
+
+      baselineState = cloneState(latestState);
+      translatedPackets = 0;
+      resetGraphicOnly("Translator created. This internal cube state now means SOLVED.");
+      statusEl.innerHTML = `<span class="ok">Translator active.</span> Future state packets are shown relative to this solved baseline.`;
+    }
+
+    function updateFromState(state) {
+      if (!isValidState(state)) return false;
+
+      latestState = cloneState(state);
+      const translated = relativeState(latestState, baselineState);
+      cubeFacelets = stateToFacelets(translated);
+      translatedPackets += 1;
+
+      pendingHistoryText = baselineState
+        ? `Translated state packet ${translatedPackets} relative to your solved baseline.`
+        : `Showing raw internal cube state. Physically solve the cube, then tap “Set Current Cube as Solved.”`;
+
+      scheduleDraw();
+      return true;
+    }
+
+    function normalizeMove(rawMove) {
+      if (!rawMove) return null;
+
+      if (typeof rawMove === "string") {
+        const s = rawMove.trim().toUpperCase();
+        const exact = s.match(/^([UDLRFB])([2']?)$/);
+        if (exact) return exact[1] + exact[2];
+
+        const embedded = s.match(/([UDLRFB][2']?)/);
+        return embedded ? embedded[1] : null;
+      }
+
+      if (typeof rawMove === "object") {
+        if (typeof rawMove.notation === "string") return normalizeMove(rawMove.notation);
+        if (typeof rawMove.name === "string") return normalizeMove(rawMove.name);
+        if (typeof rawMove.move === "string") return normalizeMove(rawMove.move);
+
+        const faceValue = rawMove.face || rawMove.layer || rawMove.side || rawMove.axis;
+        if (typeof faceValue !== "string") return null;
+
+        const faceMatch = faceValue.toUpperCase().match(/[UDLRFB]/);
+        if (!faceMatch) return null;
+
+        const f = faceMatch[0];
+        const dir = rawMove.direction ?? rawMove.dir ?? rawMove.amount ?? rawMove.turns ?? rawMove.angle ?? rawMove.clockwise;
+
+        if (dir === false || dir === -1 || dir === "-1" || dir === "CCW" || dir === "ccw") return f + "'";
+        if (dir === 2 || dir === "2" || dir === 180 || dir === "180") return f + "2";
+        return f;
+      }
+
+      return null;
+    }
+
+    resetBtn.addEventListener("click", () => {
+      resetGraphicOnly("Graphic only reset. Translator baseline was not changed.");
+    });
+
+    calibrateBtn.addEventListener("click", () => {
+      setTranslatorBaseline();
+    });
+
+    methodBtn.addEventListener("click", () => {
+      relativeMethod = relativeMethod === "A" ? "B" : "A";
+      methodBtn.textContent = `Relative Method: ${relativeMethod}`;
+
+      if (latestState) {
+        updateFromState(latestState);
+      }
+
+      historyEl.textContent = `Switched to relative method ${relativeMethod}. If turns look backwards/weird, use the other method.`;
+    });
+
+    connectBtn.addEventListener("click", async () => {
+      try {
+        if (!navigator.bluetooth) {
+          statusEl.textContent = "Web Bluetooth not available. Use Chrome on Android.";
+          return;
+        }
+
+        statusEl.textContent = "Opening Bluetooth picker...";
+
+        const conn = await connectGanCube(async () => CUBE_MAC);
+
+        resetGraphicOnly("Connected. Physically solve cube, then create translator.");
+        statusEl.innerHTML = `<span class="ok">Connected.</span> Waiting for state packets.`;
+        connectBtn.textContent = "Connected";
+
+        conn.events$.subscribe((event) => {
+          try {
+            if (event.type === "MOVE") {
+              const move = normalizeMove(event.move);
+              if (move) {
+                moves.unshift(move);
+                moves = moves.slice(0, 30);
+                pendingLastMoveText = move;
+                scheduleDraw();
+              }
+            }
+
+            if (event.type === "FACELETS") {
+              if (isValidState(event.state)) {
+                updateFromState(event.state);
+              } else {
+                pendingHistoryText = "Got a facelet packet, but no usable CP/CO/EP/EO state object was attached.";
+                scheduleDraw();
+              }
+            }
+
+            if (event.type === "DISCONNECT") {
+              statusEl.textContent = "Disconnected.";
+              connectBtn.textContent = "Reconnect GAN Cube";
+            }
+          } catch (handlerErr) {
+            statusEl.textContent = "Event handler error.";
+            historyEl.textContent = handlerErr.message;
+          }
+        });
+
+      } catch (err) {
+        statusEl.textContent = "Connection failed or canceled.";
+        historyEl.textContent = err.message;
+      }
+    });
+
+    buildCubeNetOnce();
+  </script>
+</body>
+</html>
