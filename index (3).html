@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GAN Cube Controller Test</title>
+  <style>
+    :root {
+      --bg: #101114;
+      --panel: #1b1d24;
+      --panel2: #111318;
+      --text: #f5f5f5;
+      --muted: #aeb4c2;
+      --accent: #5f7cff;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+
+    main {
+      width: min(96vw, 720px);
+      background: var(--panel);
+      border-radius: 22px;
+      padding: 20px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    }
+
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    p { margin: 6px 0 14px; }
+    .muted { color: var(--muted); }
+
+    button {
+      width: 100%;
+      font-size: 18px;
+      padding: 14px;
+      border: 0;
+      border-radius: 16px;
+      background: var(--accent);
+      color: white;
+      font-weight: 800;
+      margin: 8px 0;
+    }
+
+    button.secondary { background: #303545; }
+    button.warning { background: #8a5a22; }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .card {
+      background: var(--panel2);
+      border-radius: 18px;
+      padding: 14px;
+      margin-top: 10px;
+    }
+
+    .big {
+      font-size: 46px;
+      font-weight: 900;
+      text-align: center;
+      line-height: 1.1;
+    }
+
+    .cube-wrap {
+      overflow-x: auto;
+      padding: 12px 4px;
+    }
+
+    .cube-net {
+      display: grid;
+      grid-template-columns: repeat(12, 26px);
+      grid-template-rows: repeat(9, 26px);
+      gap: 3px;
+      width: max-content;
+      margin: 0 auto;
+    }
+
+    .sticker {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      box-shadow: inset 0 0 0 2px rgba(0,0,0,.28);
+    }
+
+    .empty {
+      width: 26px;
+      height: 26px;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 190px;
+      overflow: auto;
+      background: #0b0c10;
+      padding: 12px;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    .ok { color: #76f7a1; }
+    .warn { color: #ffd166; }
+
+    @media (max-width: 560px) {
+      main { padding: 16px; }
+      .grid2 { grid-template-columns: 1fr; }
+      .cube-net {
+        grid-template-columns: repeat(12, 22px);
+        grid-template-rows: repeat(9, 22px);
+        gap: 2px;
+      }
+      .sticker, .empty { width: 22px; height: 22px; border-radius: 5px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>GAN Cube Controller Test</h1>
+    <p class="muted">This version queues fast turns and has stricter move parsing, especially for reverse turns.</p>
+
+    <button id="connectBtn">Connect GAN Cube</button>
+    <button id="solvedBtn" class="secondary">Set Graphic to Solved</button>
+    <button id="syncBtn" class="warning">Allow One Cube State Sync</button>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="muted">Status</div>
+        <div id="status">Not connected</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">Last move</div>
+        <div id="lastMove" class="big">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Cube graphic</div>
+      <div class="cube-wrap">
+        <div id="cubeNet" class="cube-net"></div>
+      </div>
+      <div class="muted" style="font-size: 13px; margin-top: 8px;">
+        Net layout: U on top, L/F/R/B across the middle, D on bottom.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Move history</div>
+      <div id="history">None yet</div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Raw event log</div>
+      <pre id="log"></pre>
+    </div>
+  </main>
+
+  <script type="module">
+    import { connectGanCube } from "https://esm.sh/gan-web-bluetooth?bundle";
+
+    const CUBE_MAC = "C8:17:F5:D7:CE:F7";
+
+    const connectBtn = document.getElementById("connectBtn");
+    const solvedBtn = document.getElementById("solvedBtn");
+    const syncBtn = document.getElementById("syncBtn");
+    const statusEl = document.getElementById("status");
+    const lastMoveEl = document.getElementById("lastMove");
+    const historyEl = document.getElementById("history");
+    const logEl = document.getElementById("log");
+    const cubeNetEl = document.getElementById("cubeNet");
+
+    const colors = {
+      U: "#ffffff",
+      R: "#d72638",
+      F: "#22c55e",
+      D: "#ffd23f",
+      L: "#ff8c1a",
+      B: "#2563eb",
+      "?": "#3a3f4f"
+    };
+
+    let moves = [];
+    let cube = solvedCube();
+    let allowOneFaceletSync = false;
+
+    // Fast-turn reliability
+    let moveQueue = [];
+    let queueScheduled = false;
+    let lastEventFingerprint = "";
+    let lastEventTime = 0;
+
+    function solvedCube() {
+      return {
+        U: Array(9).fill("U"),
+        R: Array(9).fill("R"),
+        F: Array(9).fill("F"),
+        D: Array(9).fill("D"),
+        L: Array(9).fill("L"),
+        B: Array(9).fill("B")
+      };
+    }
+
+    function log(message, data) {
+      const line =
+        `[${new Date().toLocaleTimeString()}] ${message}` +
+        (data ? `\n${JSON.stringify(data, null, 2)}` : "");
+
+      logEl.textContent = `${line}\n\n${logEl.textContent}`;
+    }
+
+    function drawCube() {
+      cubeNetEl.innerHTML = "";
+
+      const facePositions = {
+        U: [0, 3],
+        L: [3, 0],
+        F: [3, 3],
+        R: [3, 6],
+        B: [3, 9],
+        D: [6, 3]
+      };
+
+      for (let row = 0; row < 9; row++) {
+        for (let col = 0; col < 12; col++) {
+          const div = document.createElement("div");
+          let stickerFace = null;
+          let stickerIndex = null;
+
+          for (const face of Object.keys(facePositions)) {
+            const [fr, fc] = facePositions[face];
+            if (row >= fr && row < fr + 3 && col >= fc && col < fc + 3) {
+              stickerFace = face;
+              stickerIndex = (row - fr) * 3 + (col - fc);
+              break;
+            }
+          }
+
+          if (stickerFace) {
+            div.className = "sticker";
+            div.style.background = colors[cube[stickerFace][stickerIndex]] || colors["?"];
+            div.title = `${stickerFace}${stickerIndex}`;
+          } else {
+            div.className = "empty";
+          }
+
+          cubeNetEl.appendChild(div);
+        }
+      }
+    }
+
+    function rotateFaceCW(face) {
+      const f = cube[face].slice();
+      cube[face][0] = f[6];
+      cube[face][1] = f[3];
+      cube[face][2] = f[0];
+      cube[face][3] = f[7];
+      cube[face][4] = f[4];
+      cube[face][5] = f[1];
+      cube[face][6] = f[8];
+      cube[face][7] = f[5];
+      cube[face][8] = f[2];
+    }
+
+    function cycle4(a, b, c, d) {
+      const temp = a.map(([face, i]) => cube[face][i]);
+      a.forEach(([face, i], idx) => cube[face][i] = cube[d[idx][0]][d[idx][1]]);
+      d.forEach(([face, i], idx) => cube[face][i] = cube[c[idx][0]][c[idx][1]]);
+      c.forEach(([face, i], idx) => cube[face][i] = cube[b[idx][0]][b[idx][1]]);
+      b.forEach(([face, i], idx) => cube[face][i] = temp[idx]);
+    }
+
+    function applyQuarterTurn(face) {
+      rotateFaceCW(face);
+
+      if (face === "U") {
+        cycle4(
+          [["F",0],["F",1],["F",2]],
+          [["R",0],["R",1],["R",2]],
+          [["B",0],["B",1],["B",2]],
+          [["L",0],["L",1],["L",2]]
+        );
+      }
+
+      if (face === "D") {
+        cycle4(
+          [["F",6],["F",7],["F",8]],
+          [["L",6],["L",7],["L",8]],
+          [["B",6],["B",7],["B",8]],
+          [["R",6],["R",7],["R",8]]
+        );
+      }
+
+      if (face === "R") {
+        cycle4(
+          [["U",2],["U",5],["U",8]],
+          [["F",2],["F",5],["F",8]],
+          [["D",2],["D",5],["D",8]],
+          [["B",6],["B",3],["B",0]]
+        );
+      }
+
+      if (face === "L") {
+        cycle4(
+          [["U",0],["U",3],["U",6]],
+          [["B",8],["B",5],["B",2]],
+          [["D",0],["D",3],["D",6]],
+          [["F",0],["F",3],["F",6]]
+        );
+      }
+
+      if (face === "F") {
+        cycle4(
+          [["U",6],["U",7],["U",8]],
+          [["L",8],["L",5],["L",2]],
+          [["D",2],["D",1],["D",0]],
+          [["R",0],["R",3],["R",6]]
+        );
+      }
+
+      if (face === "B") {
+        cycle4(
+          [["U",2],["U",1],["U",0]],
+          [["R",8],["R",5],["R",2]],
+          [["D",6],["D",7],["D",8]],
+          [["L",0],["L",3],["L",6]]
+        );
+      }
+    }
+
+    function normalizeMove(rawMove) {
+      if (!rawMove) return null;
+
+      // Best case: library gives a normal string like R, R', R2.
+      if (typeof rawMove === "string") {
+        const s = rawMove.trim().toUpperCase();
+        const exact = s.match(/^([UDLRFB])([2']?)$/);
+        if (exact) return exact[1] + exact[2];
+
+        // Handles strings like "move:R'" without accidentally grabbing words.
+        const embedded = s.match(/(?:^|[^A-Z])([UDLRFB])([2']?)(?:$|[^A-Z])/);
+        return embedded ? embedded[1] + embedded[2] : null;
+      }
+
+      // Common object formats. This is the big fix.
+      // Some BLE libraries use {face:"R", direction:-1} or {face:"R", amount:-1}.
+      if (typeof rawMove === "object") {
+        const face =
+          rawMove.face || rawMove.facelet || rawMove.layer || rawMove.side ||
+          rawMove.axis || rawMove.base || rawMove.move;
+
+        let f = null;
+        if (typeof face === "string") {
+          const m = face.toUpperCase().match(/[UDLRFB]/);
+          if (m) f = m[0];
+        }
+
+        if (!f && typeof rawMove.notation === "string") {
+          return normalizeMove(rawMove.notation);
+        }
+
+        if (!f && typeof rawMove.name === "string") {
+          return normalizeMove(rawMove.name);
+        }
+
+        if (!f) return null;
+
+        const dir =
+          rawMove.direction ?? rawMove.dir ?? rawMove.amount ??
+          rawMove.turns ?? rawMove.angle ?? rawMove.clockwise;
+
+        if (dir === false || dir === -1 || dir === "-1" || dir === "CCW" || dir === "ccw" || dir === "counterclockwise") {
+          return f + "'";
+        }
+
+        if (dir === 2 || dir === "2" || dir === 180 || dir === "180") {
+          return f + "2";
+        }
+
+        return f;
+      }
+
+      return null;
+    }
+
+    function applyMoveNow(move) {
+      const face = move[0];
+      const turns = move.includes("2") ? 2 : move.includes("'") ? 3 : 1;
+
+      for (let i = 0; i < turns; i++) {
+        applyQuarterTurn(face);
+      }
+
+      moves.unshift(move);
+      moves = moves.slice(0, 40);
+      lastMoveEl.textContent = move;
+      historyEl.textContent = moves.join("  ");
+    }
+
+    function enqueueMove(rawMove) {
+      const move = normalizeMove(rawMove);
+      if (!move) {
+        log("Ignored unknown move format", { rawMove });
+        return;
+      }
+
+      // Avoid exact duplicate packets that sometimes arrive twice nearly at the same instant.
+      const now = performance.now();
+      const fingerprint = move + "|" + JSON.stringify(rawMove);
+      if (fingerprint === lastEventFingerprint && now - lastEventTime < 12) {
+        log("Ignored duplicate move packet", { move, rawMove });
+        return;
+      }
+      lastEventFingerprint = fingerprint;
+      lastEventTime = now;
+
+      moveQueue.push(move);
+
+      if (!queueScheduled) {
+        queueScheduled = true;
+        queueMicrotask(processMoveQueue);
+      }
+    }
+
+    function processMoveQueue() {
+      queueScheduled = false;
+
+      // Apply every queued move before drawing once.
+      // This is faster and prevents visual lag during quick flicks.
+      while (moveQueue.length > 0) {
+        applyMoveNow(moveQueue.shift());
+      }
+
+      drawCube();
+    }
+
+    function tryApplyFacelets(facelets) {
+      if (!allowOneFaceletSync) {
+        log("Ignored saved/absolute cube state because manual tracking is active");
+        return false;
+      }
+
+      if (typeof facelets !== "string" || facelets.length < 54) {
+        return false;
+      }
+
+      const order = ["U", "R", "F", "D", "L", "B"];
+      let idx = 0;
+
+      for (const face of order) {
+        cube[face] = facelets.slice(idx, idx + 9).split("").map(x => colors[x] ? x : "?");
+        idx += 9;
+      }
+
+      allowOneFaceletSync = false;
+      drawCube();
+      log("Allowed one facelet sync, then disabled future facelet overwrites");
+      return true;
+    }
+
+    solvedBtn.addEventListener("click", () => {
+      cube = solvedCube();
+      moves = [];
+      moveQueue = [];
+      allowOneFaceletSync = false;
+
+      lastMoveEl.textContent = "SOLVED";
+      historyEl.textContent = "Graphic reset to solved.";
+      statusEl.innerHTML = `<span class="ok">Graphic set to solved.</span> Saved cube-state overwrites are ignored.`;
+      drawCube();
+      log("Graphic manually reset to solved; facelet sync disabled");
+    });
+
+    syncBtn.addEventListener("click", () => {
+      allowOneFaceletSync = true;
+      statusEl.innerHTML = `<span class="warn">Next cube-state/facelet event will be accepted once.</span>`;
+      log("User allowed one future facelet sync");
+    });
+
+    connectBtn.addEventListener("click", async () => {
+      try {
+        if (!navigator.bluetooth) {
+          statusEl.textContent =
+            "Web Bluetooth not available. Use Chrome on Android.";
+          return;
+        }
+
+        statusEl.textContent = "Opening Bluetooth picker...";
+        log("Attempting cube connection");
+
+        const conn = await connectGanCube(async () => {
+          return CUBE_MAC;
+        });
+
+        statusEl.innerHTML = `<span class="ok">Connected.</span> If your real cube is solved, tap “Set Graphic to Solved.”`;
+        connectBtn.textContent = "Connected";
+
+        conn.events$.subscribe(async (event) => {
+          log("Cube event", event);
+
+          if (event.type === "MOVE") {
+            enqueueMove(event.move);
+          }
+
+          if (event.type === "FACELETS") {
+            const usedFacelets =
+              tryApplyFacelets(event.facelets) ||
+              tryApplyFacelets(event.state) ||
+              tryApplyFacelets(event.cubeState);
+
+            if (usedFacelets) {
+              statusEl.innerHTML = `<span class="ok">Accepted one cube-state sync.</span>`;
+            }
+          }
+
+          if (event.type === "DISCONNECT") {
+            statusEl.textContent = "Disconnected.";
+            connectBtn.textContent = "Reconnect GAN Cube";
+          }
+        });
+
+      } catch (err) {
+        statusEl.textContent = "Connection failed or canceled.";
+
+        log("Error", {
+          message: err.message,
+          stack: err.stack
+        });
+      }
+    });
+
+    drawCube();
+  </script>
+</body>
+</html>
